@@ -9,7 +9,7 @@ Python & Pandas: Leading the backend, engineering the design, and handling the d
 
 Streamlit: I’m liaising the logic with this web tool so the interface is clean. The goal is to make it a proper web app so anybody on the attendance team can just log in and use it not just me.
 
-Where I am
+Where I am Currently: 
 In Progress: The core engine is still yet to give me the total counts (Present, Absent, Moderate).
 
 Done: Fixed the mapping for Sharon and Divine so the tool actually recognizes them.
