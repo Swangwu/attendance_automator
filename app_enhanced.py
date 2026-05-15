@@ -354,19 +354,19 @@ def render_session_identity() -> dict:
     st.markdown("<p class='section-header'>Step 1: Session Identity</p>", unsafe_allow_html=True)
     col1, col2, col3 = st.columns(3)
     with col1:
-        week_number      = st.text_input("Week Number",    value="2")
-        total_weeks      = st.text_input("Total Weeks",    value="4")
-        topic            = st.text_input("Session Topic",  value="Execution Framework")
+        week_number      = st.text_input("Week Number",    placeholder="2")
+        total_weeks      = st.text_input("Total Weeks",    placeholder="4")
+        topic            = st.text_input("Session Topic",  placeholder="Execution Framework")
     with col2:
-        session_date     = st.text_input("Day & Date",         value="Sunday, 12th April 2026")
-        time_range       = st.text_input("Session Time Range", value="8:00 PM – 11:10 PM")
+        session_date     = st.text_input("Day & Date",         placeholder="Sunday, 12th April 2026")
+        time_range       = st.text_input("Session Time Range", placeholder="8:00 PM – 11:10 PM")
     with col3:
-        facilitator      = st.text_input("Facilitator",    value="Temilade Salami")
-        session_duration = st.text_input("Total Duration", value="3 hours 10 minutes")
+        facilitator      = st.text_input("Facilitator",    placeholder="Temilade Salami")
+        session_duration = st.text_input("Total Duration", placeholder="3 hours 10 minutes")
 
     team_input = st.text_area(
         "Team Member List (comma separated)",
-        value="Sybil Obeng-Sintim, Paseal Njoku, Janet Isesele, Oluwasanmi Awe, Vivian Nesiama, Edidiong Udoudom, Grace Adu-Yeboah, Stephanie Nwangwu"
+        placeholder="Sybil Obeng-Sintim, Paseal Njoku, Janet Isesele, Oluwasanmi Awe, Vivian Nesiama, Edidiong Udoudom, Grace Adu-Yeboah, Stephanie Nwangwu"
     )
 
     return {
