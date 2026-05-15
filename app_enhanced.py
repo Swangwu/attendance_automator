@@ -91,14 +91,14 @@ if 'processed' not in st.session_state:
 if st.button("🚀 PROCESS SESSION DATA"):
     if all([tracker_file, report_file, template_file]):
 
-        team_list = [n.strip() for n in team_input.split(",")]
+        team_list = [n.strip() for n in team_input.split(", ")] #Added space to split demarcator
 
         tracker = pd.read_csv(tracker_file).dropna(subset=['First Name', 'Last Name'])
         tracker['Full Name'] = (
             tracker['First Name'].str.strip() + " " + tracker['Last Name'].str.strip()
         ).str.lower()
 
-        pod_map     = tracker.set_index('Full Name')['Pod'].to_dict() if 'Pod' in tracker.columns else {}
+        pod_map     = tracker.set_index('Full Name')['Pod'].to_dict() if 'Pod' in tracker.columns else {} # Wetin be this???
         mentee_list = set(tracker['Full Name'])
 
         log = pd.read_csv(report_file).dropna(subset=['Participant Name'])
