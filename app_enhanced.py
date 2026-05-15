@@ -6,57 +6,27 @@ from docx.shared import Pt, RGBColor
 import io
 import re
 
-# ── UI BRANDING
-st.set_page_config(page_title="Launchpad Sprint Operations", layout="wide", page_icon="🚀")
-st.markdown("""
-    <style>
-    .stApp { background: linear-gradient(to bottom, #ffffff, #f0f2f6); }
-    .section-header { color: #008751; font-size: 1.2rem; font-weight: 700; text-transform: uppercase; margin-bottom: 15px; }
-    .stButton>button { background: linear-gradient(135deg, #E65100 0%, #FF9800 100%); color: white; border: none; padding: 12px 30px; font-weight: bold; border-radius: 50px; }
-    [data-testid="stMetric"] { background-color: white; padding: 15px; border-radius: 10px; border-left: 5px solid #E65100; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
-    </style>
-    """, unsafe_allow_html=True)
 
-with st.sidebar:
-    st.image("logooooo-removebg-preview.png", use_container_width=True)
-    st.divider()
-    st.caption("Admin: Stephanie Nwangwu")
+# ─────────────────────────────────────────────────────────────────────────────
+# CONSTANTS
+# ─────────────────────────────────────────────────────────────────────────────
 
-st.markdown("<h1 style='text-align: center; color: #E65100;'>Launchpad Sprint Operations</h1>", unsafe_allow_html=True)
-st.divider()
+ORANGE = RGBColor(230, 81, 0)
+GREEN  = RGBColor(0, 135, 81)
 
-# ── STEP 1: SESSION IDENTITY
-st.markdown("<p class='section-header'>Step 1: Session Identity</p>", unsafe_allow_html=True)
-c1, c2, c3 = st.columns(3)
-with c1:
-    week_val  = st.text_input("Week Number", value="2")
-    total_val = st.text_input("Total Weeks", value="4")
-    topic     = st.text_input("Session Topic", value="Execution Framework")
-with c2:
-    date_str   = st.text_input("Day & Date", value="Sunday, 12th April 2026")
-    time_range = st.text_input("Session Time Range", value="8:00 PM – 11:10 PM")
-with c3:
-    facil    = st.text_input("Facilitator", value="Temilade Salami")
-    dur_text = st.text_input("Total Duration", value="3 hours 10 minutes")
+HIGH_ATTENDANCE_PCT     = 0.80  # attended >= 80% of session → High
+MODERATE_ATTENDANCE_PCT = 0.65  # attended >= 65% and < 80%  → Moderate
+# attended > 0% and < 65%  → Low
 
-team_input = st.text_area(
-    "Team Member List (comma separated)",
-    value="Sybil Obeng-Sintim, Paseal Njoku, Janet Isesele, Oluwasanmi Awe, Vivian Nesiama, Edidiong Udoudom, Grace Adu-Yeboah, Stephanie Nwangwu"
-)
+SPLIT_THRESHOLD      = 17  # attendance lists split at >= 17 names
+TEAM_SPLIT_THRESHOLD = 4   # team/guest lists split at > 4 names
 
-# ── STEP 2: DATA INGESTION
-st.markdown("<p class='section-header'>Step 2: Data Ingestion</p>", unsafe_allow_html=True)
-u1, u2, u3 = st.columns(3)
-with u1: tracker_file  = st.file_uploader("Official Mentee Tracker (CSV)", type="csv")
-with u2: report_file   = st.file_uploader("Google Meet Log (CSV)", type="csv")
-with u3: template_file = st.file_uploader("Word Master Template (.docx)", type="docx")
-
-# ── NAME FIX DICTIONARY
-# Add new entries here whenever a mentee joins with a different display name
+# Known Meet display name → official tracker name mappings.
+# Add a new entry whenever a mentee joins with an unrecognised display name.
 NAME_FIXES = {
     "vickysmane":               "victory chiamaka eze",
     "vickysmane chinedu":       "victory chiamaka eze",
-    "dd sylvia":                "chinedu divine favour",
+    "dd sylvia":                "chinedu divinefavour",
     "chukky igunbor":           "georgina samuel",
     "chukky igbunbor":          "georgina samuel",
     "pearl owusu -twum":        "pearl owusu-twum",
@@ -68,266 +38,466 @@ NAME_FIXES = {
     "moyin ojo":                "moyinoluwa ojo",
     "funke":                    "mary oloyede funke",
     "lela":                     "lela tony",
-    # NOTE: "divine omeire" removed — she is a different person from chinedu divine favour
+    # "divine omeire" intentionally omitted — different person from chinedu divine favour
 }
 
-# ── HELPERS
-def convert_to_seconds(t_str):
-    if pd.isna(t_str) or t_str == "":
+APP_CSS = """
+<style>
+.stApp { background: linear-gradient(to bottom, #ffffff, #f0f2f6); }
+.section-header { color: #008751; font-size: 1.2rem; font-weight: 700; text-transform: uppercase; margin-bottom: 15px; }
+.stButton>button { background: linear-gradient(135deg, #E65100 0%, #FF9800 100%); color: white; border: none; padding: 12px 30px; font-weight: bold; border-radius: 50px; }
+[data-testid="stMetric"] { background-color: white; padding: 15px; border-radius: 10px; border-left: 5px solid #E65100; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+[data-testid="stWidgetLabel"] > label, [data-testid="stWidgetLabel"] { color: #1a1a1a !important; }
+</style>
+"""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DATA HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def duration_to_seconds(duration_str: str) -> int:
+    if pd.isna(duration_str) or duration_str == "":
         return 0
+    text = str(duration_str)
+    hours   = re.search(r'(\d+)\s*(?:hours?|hrs?)',    text, re.IGNORECASE)
+    minutes = re.search(r'(\d+)\s*(?:minutes?|mins?)', text, re.IGNORECASE)
+    seconds = re.search(r'(\d+)\s*(?:seconds?|secs?|s\b)', text, re.IGNORECASE)
     total = 0
-    hr = re.search(r'(\d+)\s*hr',  str(t_str))
-    mn = re.search(r'(\d+)\s*min', str(t_str))
-    sc = re.search(r'(\d+)\s*s',   str(t_str))
-    if hr: total += int(hr.group(1)) * 3600
-    if mn: total += int(mn.group(1)) * 60
-    if sc: total += int(sc.group(1))
+    if hours:   total += int(hours.group(1))   * 3600
+    if minutes: total += int(minutes.group(1)) * 60
+    if seconds: total += int(seconds.group(1))
+
     return total
+
+
+def extract_full_name(row: pd.Series) -> str:
+    first = str(row['First Name']).strip() if 'First Name' in row else ""
+    last  = str(row['Last Name']).strip()  if 'Last Name'  in row else ""
+    return f"{first} {last}".strip()
+
+
+def load_tracker(tracker_file) -> tuple[set, dict]:
+    tracker = pd.read_csv(tracker_file)
+    tracker.columns = tracker.columns.str.strip()
+
+    missing_columns = [c for c in ['First Name', 'Last Name'] if c not in tracker.columns]
+    if missing_columns:
+        st.error(f"Tracker CSV is missing columns: {missing_columns}. Found: {list(tracker.columns)}")
+        st.stop()
+
+    tracker = tracker.dropna(subset=['First Name', 'Last Name'])
+    tracker['Full Name'] = (
+        tracker['First Name'].str.strip() + " " + tracker['Last Name'].str.strip()
+    ).str.lower()
+
+    mentee_list = set(tracker['Full Name'])
+    pod_map     = tracker.set_index('Full Name')['Pod'].to_dict() if 'Pod' in tracker.columns else {}
+    return mentee_list, pod_map
+
+
+def resolve_meet_name(raw_name: str, mentee_list: set, collapsed_map: dict) -> str:
+    if raw_name in NAME_FIXES:
+        return NAME_FIXES[raw_name]
+    if raw_name in mentee_list:
+        return raw_name
+    # Handles compound surnames where spaces were joined or split differently
+    if raw_name.replace(' ', '') in collapsed_map:
+        return collapsed_map[raw_name.replace(' ', '')]
+
+    raw_parts = set(raw_name.replace('-', ' ').split())
+    raw_last  = raw_name.split()[-1] if raw_name.split() else ""
+    best_match, best_score = None, 0
+
+    for mentee in mentee_list:
+        mentee_parts = set(mentee.replace('-', ' ').split())
+        mentee_last  = mentee.split()[-1] if mentee.split() else ""
+        overlap      = len(raw_parts & mentee_parts)
+        score        = overlap + (2 if raw_last == mentee_last else 0)
+        if score > best_score and (raw_last == mentee_last or overlap >= 2):
+            best_score = score
+            best_match = mentee
+
+    return best_match if best_match else raw_name
+
+
+def is_team_member(name: str, team_set: set) -> bool:
+    if name in team_set:
+        return True
+    name_parts = set(name.replace('-', ' ').split())
+    name_last  = name.split()[-1] if name.split() else ""
+    for team_name in team_set:
+        team_parts = set(team_name.replace('-', ' ').split())
+        team_last  = team_name.split()[-1] if team_name.split() else ""
+        overlap    = len(name_parts & team_parts)
+        if team_last == name_last or overlap >= 2:
+            return True
+    return False
+
+
+def classify_attendance(attendance_df, mentee_list: set, team_set: set, excluded_names: set):
+    mentees_found = attendance_df[attendance_df['Name'].isin(mentee_list)]
+    unmatched     = attendance_df[~attendance_df['Name'].isin(excluded_names)].copy()
+    facilitators  = unmatched[unmatched['Name'].apply(lambda n: is_team_member(n, team_set))]
+    guests        = unmatched[~unmatched['Name'].apply(lambda n: is_team_member(n, team_set))]
+    return mentees_found, facilitators, guests
+
+
+def group_names_by_pod(name_list: list, pod_map: dict) -> tuple[str, str]:
+    pods_dict = {}
+    for name in name_list:
+        pod = pod_map.get(name.lower(), "Unknown Pod")
+        pods_dict.setdefault(pod, []).append(name)
+    pods_text  = "\n".join(str(pod) for pod in pods_dict)
+    names_text = "\n".join(", ".join(members) for members in pods_dict.values())
+    return pods_text, names_text
+
+
+def build_attendance_results(meet_log, mentees_found, mentee_list, pod_map, team_list, meeting_duration_seconds: int, guests_df) -> dict:
+    high_threshold     = HIGH_ATTENDANCE_PCT     * meeting_duration_seconds
+    moderate_threshold = MODERATE_ATTENDANCE_PCT * meeting_duration_seconds
+    seconds            = mentees_found['Seconds']
+    return {
+        "total_participants":   len(meet_log['RawName'].unique()),
+        "expected_mentees":     len(mentee_list),
+        "present_mentees":      len(mentees_found),
+        "attendance_rate":      f"{round((len(mentees_found) / len(mentee_list)) * 100, 1)}%",
+        "high_attendance":      sorted(mentees_found[seconds >= high_threshold]['Name'].str.title().tolist()),
+        "moderate_attendance":  sorted(mentees_found[(seconds >= moderate_threshold) & (seconds < high_threshold)]['Name'].str.title().tolist()),
+        "low_attendance":       sorted(mentees_found[seconds < moderate_threshold]['Name'].str.title().tolist()),
+        "absent":               sorted([name.title() for name in mentee_list if name not in set(mentees_found['Name'])]),
+        "guests":               sorted(guests_df['Name'].str.title().tolist()),
+        "pod_map":              pod_map,
+        "team":                 team_list,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WORD DOCUMENT HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def consolidate_and_replace(paragraphs, replacements: dict):
+    for paragraph in paragraphs:
+        # Word splits placeholder strings across multiple runs; merge them first
+        if paragraph.runs and any(key in paragraph.text for key in replacements):
+            paragraph.runs[0].text = "".join(run.text for run in paragraph.runs)
+            for run in paragraph.runs[1:]:
+                run.text = ""
+        for key, value in replacements.items():
+            for run in paragraph.runs:
+                if key in run.text:
+                    run.text = run.text.replace(key, str(value))
+
+
+def iter_body_tables(body_element):
+    for child in body_element:
+        tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
+        if tag == 'tbl':
+            yield Table(child, body_element)
+        else:
+            yield from iter_body_tables(child)
+
+
+def fill_list_left_cell(cell, names: list, color: RGBColor = None, threshold: int = SPLIT_THRESHOLD):
+    cell.text    = ""
+    use_two_cols = len(names) >= threshold
+    midpoint     = (len(names) + 1) // 2
+    display      = names[:midpoint] if use_two_cols else names
+    font_size    = Pt(9) if use_two_cols else Pt(10)
+    for i, name in enumerate(display):
+        line      = f"{i + 1}. {name}"
+        paragraph = cell.add_paragraph(line)
+        run       = paragraph.runs[0] if paragraph.runs else paragraph.add_run(line)
+        run.font.name = 'Montserrat'
+        run.font.size = font_size
+        if color:
+            run.font.color.rgb = color
+
+
+def fill_list_right_cell(cell, names: list, color: RGBColor = None, threshold: int = SPLIT_THRESHOLD):
+    cell.text = ""
+    if len(names) < threshold:
+        return
+    midpoint    = (len(names) + 1) // 2
+    right_names = names[midpoint:]
+    for i, name in enumerate(right_names):
+        line      = f"{midpoint + i + 1}. {name}"
+        paragraph = cell.add_paragraph(line)
+        run       = paragraph.runs[0] if paragraph.runs else paragraph.add_run(line)
+        run.font.name = 'Montserrat'
+        run.font.size = Pt(9)
+        if color:
+            run.font.color.rgb = color
+
+
+def apply_stat_highlight(cell, replacements: dict):
+    stat_keys = ["{{total_participants}}", "{{total_mentees}}", "{{total_present}}", "{{attendance_rate}}"]
+    for paragraph in cell.paragraphs:
+        for run in paragraph.runs:
+            for key in stat_keys:
+                if run.text == replacements.get(key, "___NO___"):
+                    run.font.bold      = True
+                    run.font.color.rgb = ORANGE
+                    run.font.size      = Pt(18)
+
+
+def build_replacements(session: dict, results: dict, observations: dict) -> dict:
+    low_pods, _  = group_names_by_pod(results['low_attendance'], results['pod_map'])
+    abs_pods, _  = group_names_by_pod(results['absent'],         results['pod_map'])
+    session_date_only = session['date'].split(',')[-1].strip() if ',' in session['date'] else session['date']
+    return {
+        "{{week_number}}":        session['week_number'],
+        "{{total_weeks}}":        session['total_weeks'],
+        "{{session_name}}":       session['topic'],
+        "{{session_day_date}}":   session['date'],
+        "{{session_time}}":       session['time_range'],
+        "{{total_participants}}": str(results['total_participants']),
+        "{{total_mentees}}":      str(results['expected_mentees']),
+        "{{total_present}}":      str(results['present_mentees']),
+        "{{attendance_rate}}":    results['attendance_rate'],
+        "{{facilitator}}":        session['facilitator'],
+        "{{session_date}}":       session_date_only,
+        "{{session_duration}}":   f"{session['duration']} ({session['time_range']})",
+        "{{high_count}}":         str(len(results['high_attendance'])),
+        "{{moderate_count}}":     str(len(results['moderate_attendance'])),
+        "{{low_count}}":          str(len(results['low_attendance'])),
+        "{{low_pod}}":            low_pods,
+        "{{absent_pod}}":         abs_pods,
+        "{{obs_attendance}}":     observations['attendance'],
+        "{{obs_engagement}}":     observations['engagement'],
+        "{{obs_absentees}}":      observations['absentees'],
+    }
+
+
+def generate_report(template_file, replacements: dict, results: dict) -> bytes:
+    doc = Document(template_file)
+
+    # Replace placeholders in document headers
+    for section in doc.sections:
+        consolidate_and_replace(section.header.paragraphs, replacements)
+        for table in section.header.tables:
+            for row in table.rows:
+                seen_cells = set()
+                for cell in row.cells:
+                    if id(cell._tc) in seen_cells:
+                        continue
+                    seen_cells.add(id(cell._tc))
+                    consolidate_and_replace(cell.paragraphs, replacements)
+
+    # Replace placeholders in body paragraphs
+    consolidate_and_replace(doc.paragraphs, replacements)
+
+    # Maps each template tag to (default_side, name_list, color, split_threshold).
+    # Tags with the same placeholder in both cells (e.g. {{guests}}) use default_side='left';
+    # the per-row left_filled set converts the second occurrence to 'right' automatically.
+    # Tags with explicit _left/_right names carry their side directly.
+    list_cell_map = {
+        "{{guests_left}}":         ('left',  results['guests'],               None,  TEAM_SPLIT_THRESHOLD),
+        "{{guests_right}}":        ('right', results['guests'],               None,  TEAM_SPLIT_THRESHOLD),
+        "{{team_members_left}}":   ('left',  results['team'],                 GREEN, TEAM_SPLIT_THRESHOLD),
+        "{{team_members_right}}":  ('right', results['team'],                 GREEN, TEAM_SPLIT_THRESHOLD),
+        "{{high_list_left}}":      ('left',  results['high_attendance'],       None,  SPLIT_THRESHOLD),
+        "{{high_list_right}}":     ('right', results['high_attendance'],       None,  SPLIT_THRESHOLD),
+        "{{moderate_list_left}}":  ('left',  results['moderate_attendance'],   None,  SPLIT_THRESHOLD),
+        "{{moderate_list_right}}": ('right', results['moderate_attendance'],   None,  SPLIT_THRESHOLD),
+        "{{low_list_left}}":       ('left',  results['low_attendance'],        None,  SPLIT_THRESHOLD),
+        "{{low_list_right}}":      ('right', results['low_attendance'],        None,  SPLIT_THRESHOLD),
+        "{{absent_list_left}}":    ('left',  results['absent'],                None,  SPLIT_THRESHOLD),
+        "{{absent_list_right}}":   ('right', results['absent'],                None,  SPLIT_THRESHOLD),
+    }
+
+    # Replace placeholders in all body tables
+    for table in iter_body_tables(doc.element.body):
+        for row in table.rows:
+            seen_cells  = set()
+            left_filled = set()  # tracks which tags have had their left cell filled in this row
+            for cell in row.cells:
+                if id(cell._tc) in seen_cells:
+                    continue
+                seen_cells.add(id(cell._tc))
+                cell_text = cell.text
+
+                list_tag_handled = False
+                for tag, (side, names, color, threshold) in list_cell_map.items():
+                    if tag in cell_text:
+                        # If the same tag appears in a second cell in this row, treat it as right
+                        effective_side = 'right' if (side == 'left' and tag in left_filled) else side
+                        if effective_side == 'left':
+                            fill_list_left_cell(cell, names, color, threshold)
+                            left_filled.add(tag)
+                        else:
+                            fill_list_right_cell(cell, names, color, threshold)
+                        list_tag_handled = True
+                        break
+
+                if not list_tag_handled:
+                    consolidate_and_replace(cell.paragraphs, replacements)
+                    apply_stat_highlight(cell, replacements)
+
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    return buffer.getvalue()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# UI SECTIONS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def render_sidebar():
+    with st.sidebar:
+        st.image("logooooo-removebg-preview.png", use_container_width=True)
+        st.divider()
+        st.caption("Admin: Stephanie Nwangwu")
+
+
+def render_session_identity() -> dict:
+    st.markdown("<p class='section-header'>Step 1: Session Identity</p>", unsafe_allow_html=True)
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        week_number      = st.text_input("Week Number",    value="2")
+        total_weeks      = st.text_input("Total Weeks",    value="4")
+        topic            = st.text_input("Session Topic",  value="Execution Framework")
+    with col2:
+        session_date     = st.text_input("Day & Date",         value="Sunday, 12th April 2026")
+        time_range       = st.text_input("Session Time Range", value="8:00 PM – 11:10 PM")
+    with col3:
+        facilitator      = st.text_input("Facilitator",    value="Temilade Salami")
+        session_duration = st.text_input("Total Duration", value="3 hours 10 minutes")
+
+    team_input = st.text_area(
+        "Team Member List (comma separated)",
+        value="Sybil Obeng-Sintim, Paseal Njoku, Janet Isesele, Oluwasanmi Awe, Vivian Nesiama, Edidiong Udoudom, Grace Adu-Yeboah, Stephanie Nwangwu"
+    )
+
+    return {
+        "week_number": week_number,
+        "total_weeks": total_weeks,
+        "topic":       topic,
+        "date":        session_date,
+        "time_range":  time_range,
+        "facilitator": facilitator,
+        "duration":    session_duration,
+        "team_input":  team_input,
+    }
+
+
+def render_file_uploaders() -> tuple:
+    st.markdown("<p class='section-header'>Step 2: Data Ingestion</p>", unsafe_allow_html=True)
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        tracker_file  = st.file_uploader("Official Mentee Tracker (CSV)",  type="csv")
+    with col2:
+        meet_log_file = st.file_uploader("Google Meet Log (CSV)",           type="csv")
+    with col3:
+        template_file = st.file_uploader("Word Master Template (.docx)",    type="docx")
+    return tracker_file, meet_log_file, template_file
+
+
+def render_match_feedback(facilitators, guests):
+    if len(facilitators) == 0 and len(guests) == 0:
+        st.success("✅ All Meet names matched to mentees successfully")
+        return
+    if len(facilitators) > 0:
+        st.info(f"ℹ️ {len(facilitators)} team member(s) detected in the Meet log:")
+        display_fac = facilitators[['Name']].copy()
+        display_fac['Name'] = display_fac['Name'].str.title()
+        st.dataframe(display_fac.rename(columns={'Name': 'Team Member'}), hide_index=True)
+    if len(guests) > 0:
+        st.warning(f"⚠️ {len(guests)} guest(s) detected — not a mentee or team member. Add to NAME_FIXES if they are real mentees:")
+        display_guests = guests[['Name']].copy()
+        display_guests['Name'] = display_guests['Name'].str.title()
+        st.dataframe(display_guests.rename(columns={'Name': 'Guest'}), hide_index=True)
+
+
+def render_dashboard(results: dict):
+    st.divider()
+    st.markdown("<p class='section-header'>Sprint Dashboard</p>", unsafe_allow_html=True)
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Total Participants", results['total_participants'])
+    col2.metric("Expected Mentees",   results['expected_mentees'])
+    col3.metric("Mentees Present",    results['present_mentees'])
+    col4.metric("Attendance Rate",    results['attendance_rate'])
+
+
+def render_observations(results: dict) -> dict:
+    st.markdown("<p class='section-header'>Step 3: Operations Observations</p>", unsafe_allow_html=True)
+    absent_count   = len(results['absent'])
+    attendance_obs = st.text_area(
+        "Attendance Observation",
+        value=f"{results['present_mentees']}/{results['expected_mentees']} mentees present."
+    )
+    engagement_obs = st.text_area(
+        "Engagement Observation",
+        value="High; majority stayed for the duration."
+    )
+    absentees_obs  = st.text_area(
+        "Absentees Note",
+        value=f"{absent_count} mentee{'s' if absent_count != 1 else ''} missed the session."
+    )
+    return {
+        "attendance": attendance_obs,
+        "engagement": engagement_obs,
+        "absentees":  absentees_obs,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# APP ENTRY POINT
+# ─────────────────────────────────────────────────────────────────────────────
+
+st.set_page_config(page_title="Launchpad Sprint Operations", layout="wide", page_icon="🚀")
+st.markdown(APP_CSS, unsafe_allow_html=True)
+
+render_sidebar()
+st.markdown("<h1 style='text-align: center; color: #E65100;'>Launchpad Sprint Operations</h1>", unsafe_allow_html=True)
+st.divider()
+
+session                                    = render_session_identity()
+tracker_file, meet_log_file, template_file = render_file_uploaders()
 
 if 'processed' not in st.session_state:
     st.session_state.processed = False
 
-# ── PROCESS BUTTON
 if st.button("🚀 PROCESS SESSION DATA"):
-    if all([tracker_file, report_file, template_file]):
-
-        team_list = [n.strip() for n in team_input.split(",")]
-
-        tracker = pd.read_csv(tracker_file).dropna(subset=['First Name', 'Last Name'])
-        tracker['Full Name'] = (
-            tracker['First Name'].str.strip() + " " + tracker['Last Name'].str.strip()
-        ).str.lower()
-
-        pod_map     = tracker.set_index('Full Name')['Pod'].to_dict() if 'Pod' in tracker.columns else {}
-        mentee_list = set(tracker['Full Name'])
-
-        log = pd.read_csv(report_file).dropna(subset=['Participant Name'])
-        log['RawName'] = log['Participant Name'].str.strip().str.lower()
-
-        # ── IMPROVED MATCHING
-        def get_best_match(raw_name):
-            # 1. Direct fix lookup
-            if raw_name in NAME_FIXES:
-                return NAME_FIXES[raw_name]
-            # 2. Exact match
-            if raw_name in mentee_list:
-                return raw_name
-            # 3. Word overlap — prioritise surname match
-            raw_parts = set(raw_name.replace('-', ' ').split())
-            raw_last  = raw_name.split()[-1] if raw_name.split() else ""
-            best_match, best_score = None, 0
-            for m in mentee_list:
-                m_parts = set(m.replace('-', ' ').split())
-                m_last  = m.split()[-1] if m.split() else ""
-                overlap = len(raw_parts & m_parts)
-                score   = overlap + (2 if raw_last == m_last else 0)
-                if score > best_score and (raw_last == m_last or overlap >= 2):
-                    best_score = score
-                    best_match = m
-            return best_match if best_match else raw_name
-
-        log['Name']    = log['RawName'].apply(get_best_match)
-        log['Seconds'] = log['Attended Duration'].apply(convert_to_seconds)
-
-        attendance    = log.groupby('Name')['Seconds'].sum().reset_index()
-        mentees_found = attendance[attendance['Name'].isin(mentee_list)]
-
-        # ── DEBUG: show unmatched names so you can add them to NAME_FIXES
-        unmatched = attendance[~attendance['Name'].isin(mentee_list)].copy()
-        if len(unmatched) > 0:
-            st.warning(f"⚠️ {len(unmatched)} Meet name(s) couldn't be matched — add them to NAME_FIXES if they are real mentees:")
-            st.dataframe(
-                unmatched[['Name']].rename(columns={'Name': 'Unmatched Meet Name'}),
-                hide_index=True
-            )
-        else:
-            st.success("✅ All Meet names matched successfully")
-
-        st.session_state.results = {
-            "total_p":  len(log['RawName'].unique()),
-            "expected": len(mentee_list),
-            "present":  len(mentees_found),
-            "rate":     f"{round((len(mentees_found) / len(mentee_list)) * 100, 1)}%",
-            "high":     sorted(mentees_found[mentees_found['Seconds'] >= 10800]['Name'].str.title().tolist()),
-            "mod":      sorted(mentees_found[(mentees_found['Seconds'] >= 7200)  & (mentees_found['Seconds'] < 10800)]['Name'].str.title().tolist()),
-            "low":      sorted(mentees_found[(mentees_found['Seconds'] >= 3600)  & (mentees_found['Seconds'] < 7200)]['Name'].str.title().tolist()),
-            "absent":   sorted([n.title() for n in mentee_list if n not in set(mentees_found['Name'])]),
-            "pod_map":  pod_map,
-            "team":     team_list,
-        }
-        st.session_state.processed = True
-    else:
+    if not all([tracker_file, meet_log_file, template_file]):
         st.error("Please upload all three files before processing.")
+    else:
+        team_list = [name.strip() for name in session['team_input'].split(",")]
 
-# ── DASHBOARD + REPORT GENERATION
+        mentee_list, pod_map  = load_tracker(tracker_file)
+        collapsed_map         = {name.replace(' ', ''): name for name in mentee_list}
+
+        print("Collapsed map: ", collapsed_map)
+
+        meet_log              = pd.read_csv(meet_log_file).dropna(subset=['Participant Name'])
+        meet_log['RawName']   = meet_log['Participant Name'].str.strip().str.lower()
+        meet_log['Name']      = meet_log['RawName'].apply(lambda n: resolve_meet_name(n, mentee_list, collapsed_map))
+        meet_log['Seconds']   = meet_log['Attended Duration'].apply(duration_to_seconds)
+
+        attendance      = meet_log.groupby('Name')['Seconds'].sum().reset_index()
+        team_set        = {name.lower() for name in team_list}
+        excluded_names  = mentee_list | {session['facilitator'].strip().lower()}
+
+        mentees_found, facilitators, guests = classify_attendance(
+            attendance, mentee_list, team_set, excluded_names
+        )
+        render_match_feedback(facilitators, guests)
+
+        meeting_duration_seconds   = duration_to_seconds(session['duration'])
+        st.session_state.results   = build_attendance_results(meet_log, mentees_found, mentee_list, pod_map, team_list, meeting_duration_seconds, guests)
+        st.session_state.processed = True
+
 if st.session_state.processed:
-    r = st.session_state.results
-
-    st.divider()
-    st.markdown("<p class='section-header'>Sprint Dashboard</p>", unsafe_allow_html=True)
-    d1, d2, d3, d4 = st.columns(4)
-    d1.metric("Total Participants", r['total_p'])
-    d2.metric("Expected Mentees",   r['expected'])
-    d3.metric("Mentees Present",    r['present'])
-    d4.metric("Attendance Rate",    r['rate'])
-
-    st.markdown("<p class='section-header'>Step 3: Operations Observations</p>", unsafe_allow_html=True)
-    absent_count = len(r['absent'])
-    o_attn = st.text_area("Attendance Observation",
-        value=f"{r['present']}/{r['expected']} mentees present.")
-    o_eng  = st.text_area("Engagement Observation",
-        value="High; majority stayed for the duration.")
-    o_abs  = st.text_area("Absentees Note",
-        value=f"{absent_count} mentee{'s' if absent_count != 1 else ''} missed the session.")
+    results = st.session_state.results
+    render_dashboard(results)
+    observations = render_observations(results)
 
     if st.button("📝 GENERATE SPRINT REPORT"):
-        ORANGE = RGBColor(230, 81, 0)
-        GREEN  = RGBColor(0, 135, 81)
-
-        # ── Pod grouping helper
-        def get_names_with_pods(name_list):
-            pods_dict = {}
-            for name in name_list:
-                pod = r['pod_map'].get(name.lower(), "Unknown Pod")
-                pods_dict.setdefault(pod, []).append(name)
-            pods_out  = "\n".join(str(p) for p in pods_dict)
-            names_out = "\n".join(", ".join(members) for members in pods_dict.values())
-            return pods_out, names_out
-
-        low_pods, low_names = get_names_with_pods(r['low'])
-        abs_pods, abs_names = get_names_with_pods(r['absent'])
-
-        replacements = {
-            "{{week_number}}":        week_val,
-            "{{total_weeks}}":        total_val,
-            "{{session_name}}":       topic,
-            "{{session_day_date}}":   date_str,
-            "{{session_time}}":       time_range,
-            "{{total_participants}}": str(r['total_p']),
-            "{{total_mentees}}":      str(r['expected']),
-            "{{total_present}}":      str(r['present']),
-            "{{attendance_rate}}":    r['rate'],
-            "{{facilitator}}":        facil,
-            "{{session_date}}":       date_str.split(',')[-1].strip() if ',' in date_str else date_str,
-            "{{session_duration}}":   f"{dur_text} ({time_range})",
-            "{{high_count}}":         str(len(r['high'])),    # number only — template has "mentees" after
-            "{{moderate_count}}":     str(len(r['mod'])),     # number only
-            "{{low_count}}":          str(len(r['low'])),     # number only
-            "{{low_pod}}":            low_pods,
-            "{{low_list}}":           low_names,
-            "{{absent_pod}}":         abs_pods,
-            "{{absent_list}}":        abs_names,
-            "{{obs_attendance}}":     o_attn,
-            "{{obs_engagement}}":     o_eng,
-            "{{obs_absentees}}":      o_abs,
-        }
-
-        # ── Run-safe paragraph replacement (preserves bold/colour/size)
-        def replace_in_paragraphs(paragraphs):
-            for p in paragraphs:
-                for k, v in replacements.items():
-                    if k in p.text:
-                        for run in p.runs:
-                            if k in run.text:
-                                run.text = run.text.replace(k, str(v))
-
-        # ── Walk ALL tables in XML order (catches tables missed by doc.tables)
-        def iter_all_tables(element):
-            for child in element:
-                tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
-                if tag == 'tbl':
-                    yield Table(child, element)
-                else:
-                    yield from iter_all_tables(child)
-
-        doc = Document(template_file)
-
-        # ── FIX 1: replace inside Word header (WEEK 2/4 badge lives here)
-        for section in doc.sections:
-            replace_in_paragraphs(section.header.paragraphs)
-            for table in section.header.tables:
-                for row in table.rows:
-                    seen_row = set()
-                    for cell in row.cells:
-                        if id(cell._tc) in seen_row: continue
-                        seen_row.add(id(cell._tc))
-                        replace_in_paragraphs(cell.paragraphs)
-
-        # Body paragraphs
-        replace_in_paragraphs(doc.paragraphs)
-
-        # ── FIX 3: deduplicate PER ROW only (not globally) — avoids skipping
-        #           cells whose _tc id appears across multiple tables in this template
-        for table in iter_all_tables(doc.element.body):
-            for row in table.rows:
-                seen_row = set()  # reset per row
-                for cell in row.cells:
-                    if id(cell._tc) in seen_row:
-                        continue
-                    seen_row.add(id(cell._tc))
-
-                    cell_text = cell.text
-
-                    # Team members — plain list
-                    if "{{team_members}}" in cell_text:
-                        cell.text = ""
-                        for member in r['team']:
-                            p   = cell.add_paragraph(member)
-                            run = p.runs[0] if p.runs else p.add_run(member)
-                            run.font.name = 'Montserrat'
-                            run.font.size = Pt(10)
-                            run.font.color.rgb = GREEN
-                        continue
-
-                    # Name list blocks — check BEFORE replace_in_paragraphs touches the cell
-                    list_map = {
-                        "{{high_list}}":     (r['high'], 'columns'),
-                        "{{moderate_list}}": (r['mod'],  'columns'),
-                        "{{low_list}}":      (r['low'],  'plain'),
-                        "{{absent_list}}":   (r['absent'], 'plain'),
-                    }
-                    handled = False
-                    for tag, (names, style) in list_map.items():
-                        if tag in cell_text:
-                            cell.text = ""
-                            if style == 'plain':
-                                for name in names:
-                                    p   = cell.add_paragraph(name)
-                                    run = p.runs[0] if p.runs else p.add_run(name)
-                                    run.font.name = 'Montserrat'
-                                    run.font.size = Pt(10)
-                            else:
-                                mid  = (len(names) + 1) // 2
-                                col1, col2 = names[:mid], names[mid:]
-                                for i in range(max(len(col1), len(col2))):
-                                    n1   = col1[i] if i < len(col1) else ""
-                                    n2   = col2[i] if i < len(col2) else ""
-                                    num2 = f"{i+mid+1}." if n2 else ""
-                                    line = f"{i+1}. {n1:<35} {num2:<4} {n2}"
-                                    p    = cell.add_paragraph(line)
-                                    run  = p.runs[0] if p.runs else p.add_run(line)
-                                    run.font.name = 'Montserrat'
-                                    run.font.size = Pt(9)
-                            handled = True
-                            break
-
-                    if not handled:
-                        replace_in_paragraphs(cell.paragraphs)
-                        # Bold + orange the four stats-bar numbers
-                        for p in cell.paragraphs:
-                            for run in p.runs:
-                                for k in ["{{total_participants}}", "{{total_mentees}}",
-                                          "{{total_present}}", "{{attendance_rate}}"]:
-                                    if run.text == replacements.get(k, "___NO___"):
-                                        run.font.bold      = True
-                                        run.font.color.rgb = ORANGE
-                                        run.font.size      = Pt(18)
-
-        bio = io.BytesIO()
-        doc.save(bio)
+        replacements = build_replacements(session, results, observations)
+        report_bytes = generate_report(template_file, replacements, results)
         st.balloons()
         st.download_button(
             "📥 DOWNLOAD FINAL REPORT",
-            data=bio.getvalue(),
-            file_name=f"Sprint_Week_{week_val}_Report.docx"
+            data=report_bytes,
+            file_name=f"Sprint_Week_{session['week_number']}_Report.docx"
         )
