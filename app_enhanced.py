@@ -18,7 +18,8 @@ HIGH_ATTENDANCE_PCT     = 0.80  # attended >= 80% of session → High
 MODERATE_ATTENDANCE_PCT = 0.65  # attended >= 65% and < 80%  → Moderate
 # attended > 0% and < 65%  → Low
 
-SPLIT_THRESHOLD = 17  # lists with >= 17 names use both left and right columns
+SPLIT_THRESHOLD      = 17  # attendance lists split at >= 17 names
+TEAM_SPLIT_THRESHOLD = 4   # team/guest lists split at > 4 names
 
 # Known Meet display name → official tracker name mappings.
 # Add a new entry whenever a mentee joins with an unrecognised display name.
@@ -152,7 +153,7 @@ def group_names_by_pod(name_list: list, pod_map: dict) -> tuple[str, str]:
     return pods_text, names_text
 
 
-def build_attendance_results(meet_log, mentees_found, mentee_list, pod_map, team_list, meeting_duration_seconds: int) -> dict:
+def build_attendance_results(meet_log, mentees_found, mentee_list, pod_map, team_list, meeting_duration_seconds: int, guests_df) -> dict:
     high_threshold     = HIGH_ATTENDANCE_PCT     * meeting_duration_seconds
     moderate_threshold = MODERATE_ATTENDANCE_PCT * meeting_duration_seconds
     seconds            = mentees_found['Seconds']
@@ -165,6 +166,7 @@ def build_attendance_results(meet_log, mentees_found, mentee_list, pod_map, team
         "moderate_attendance":  sorted(mentees_found[(seconds >= moderate_threshold) & (seconds < high_threshold)]['Name'].str.title().tolist()),
         "low_attendance":       sorted(mentees_found[seconds < moderate_threshold]['Name'].str.title().tolist()),
         "absent":               sorted([name.title() for name in mentee_list if name not in set(mentees_found['Name'])]),
+        "guests":               sorted(guests_df['Name'].str.title().tolist()),
         "pod_map":              pod_map,
         "team":                 team_list,
     }
@@ -196,9 +198,9 @@ def iter_body_tables(body_element):
             yield from iter_body_tables(child)
 
 
-def fill_list_left_cell(cell, names: list, color: RGBColor = None):
+def fill_list_left_cell(cell, names: list, color: RGBColor = None, threshold: int = SPLIT_THRESHOLD):
     cell.text    = ""
-    use_two_cols = len(names) >= SPLIT_THRESHOLD
+    use_two_cols = len(names) >= threshold
     midpoint     = (len(names) + 1) // 2
     display      = names[:midpoint] if use_two_cols else names
     font_size    = Pt(9) if use_two_cols else Pt(10)
@@ -212,9 +214,9 @@ def fill_list_left_cell(cell, names: list, color: RGBColor = None):
             run.font.color.rgb = color
 
 
-def fill_list_right_cell(cell, names: list, color: RGBColor = None):
+def fill_list_right_cell(cell, names: list, color: RGBColor = None, threshold: int = SPLIT_THRESHOLD):
     cell.text = ""
-    if len(names) < SPLIT_THRESHOLD:
+    if len(names) < threshold:
         return
     midpoint    = (len(names) + 1) // 2
     right_names = names[midpoint:]
@@ -285,26 +287,30 @@ def generate_report(template_file, replacements: dict, results: dict) -> bytes:
     # Replace placeholders in body paragraphs
     consolidate_and_replace(doc.paragraphs, replacements)
 
-    # Maps each template tag to (side, name_list, optional_color).
-    # left cells: all names when < SPLIT_THRESHOLD, first half when >= SPLIT_THRESHOLD.
-    # right cells: cleared when < SPLIT_THRESHOLD, second half when >= SPLIT_THRESHOLD.
+    # Maps each template tag to (default_side, name_list, color, split_threshold).
+    # Tags with the same placeholder in both cells (e.g. {{guests}}) use default_side='left';
+    # the per-row left_filled set converts the second occurrence to 'right' automatically.
+    # Tags with explicit _left/_right names carry their side directly.
     list_cell_map = {
-        "{{team_members_left}}":   ('left',  results['team'],                GREEN),
-        "{{team_members_right}}":  ('right', results['team'],                GREEN),
-        "{{high_list_left}}":      ('left',  results['high_attendance'],      None),
-        "{{high_list_right}}":     ('right', results['high_attendance'],      None),
-        "{{moderate_list_left}}":  ('left',  results['moderate_attendance'],  None),
-        "{{moderate_list_right}}": ('right', results['moderate_attendance'],  None),
-        "{{low_list_left}}":       ('left',  results['low_attendance'],       None),
-        "{{low_list_right}}":      ('right', results['low_attendance'],       None),
-        "{{absent_list_left}}":    ('left',  results['absent'],               None),
-        "{{absent_list_right}}":   ('right', results['absent'],               None),
+        "{{guests_left}}":         ('left',  results['guests'],               None,  TEAM_SPLIT_THRESHOLD),
+        "{{guests_right}}":        ('right', results['guests'],               None,  TEAM_SPLIT_THRESHOLD),
+        "{{team_members_left}}":   ('left',  results['team'],                 GREEN, TEAM_SPLIT_THRESHOLD),
+        "{{team_members_right}}":  ('right', results['team'],                 GREEN, TEAM_SPLIT_THRESHOLD),
+        "{{high_list_left}}":      ('left',  results['high_attendance'],       None,  SPLIT_THRESHOLD),
+        "{{high_list_right}}":     ('right', results['high_attendance'],       None,  SPLIT_THRESHOLD),
+        "{{moderate_list_left}}":  ('left',  results['moderate_attendance'],   None,  SPLIT_THRESHOLD),
+        "{{moderate_list_right}}": ('right', results['moderate_attendance'],   None,  SPLIT_THRESHOLD),
+        "{{low_list_left}}":       ('left',  results['low_attendance'],        None,  SPLIT_THRESHOLD),
+        "{{low_list_right}}":      ('right', results['low_attendance'],        None,  SPLIT_THRESHOLD),
+        "{{absent_list_left}}":    ('left',  results['absent'],                None,  SPLIT_THRESHOLD),
+        "{{absent_list_right}}":   ('right', results['absent'],                None,  SPLIT_THRESHOLD),
     }
 
     # Replace placeholders in all body tables
     for table in iter_body_tables(doc.element.body):
         for row in table.rows:
-            seen_cells = set()
+            seen_cells  = set()
+            left_filled = set()  # tracks which tags have had their left cell filled in this row
             for cell in row.cells:
                 if id(cell._tc) in seen_cells:
                     continue
@@ -312,12 +318,15 @@ def generate_report(template_file, replacements: dict, results: dict) -> bytes:
                 cell_text = cell.text
 
                 list_tag_handled = False
-                for tag, (side, names, color) in list_cell_map.items():
+                for tag, (side, names, color, threshold) in list_cell_map.items():
                     if tag in cell_text:
-                        if side == 'left':
-                            fill_list_left_cell(cell, names, color)
+                        # If the same tag appears in a second cell in this row, treat it as right
+                        effective_side = 'right' if (side == 'left' and tag in left_filled) else side
+                        if effective_side == 'left':
+                            fill_list_left_cell(cell, names, color, threshold)
+                            left_filled.add(tag)
                         else:
-                            fill_list_right_cell(cell, names, color)
+                            fill_list_right_cell(cell, names, color, threshold)
                         list_tag_handled = True
                         break
 
@@ -390,10 +399,14 @@ def render_match_feedback(facilitators, guests):
         return
     if len(facilitators) > 0:
         st.info(f"ℹ️ {len(facilitators)} team member(s) detected in the Meet log:")
-        st.dataframe(facilitators[['Name']].rename(columns={'Name': 'Team Member'}), hide_index=True)
+        display_fac = facilitators[['Name']].copy()
+        display_fac['Name'] = display_fac['Name'].str.title()
+        st.dataframe(display_fac.rename(columns={'Name': 'Team Member'}), hide_index=True)
     if len(guests) > 0:
         st.warning(f"⚠️ {len(guests)} guest(s) detected — not a mentee or team member. Add to NAME_FIXES if they are real mentees:")
-        st.dataframe(guests[['Name']].rename(columns={'Name': 'Guest'}), hide_index=True)
+        display_guests = guests[['Name']].copy()
+        display_guests['Name'] = display_guests['Name'].str.title()
+        st.dataframe(display_guests.rename(columns={'Name': 'Guest'}), hide_index=True)
 
 
 def render_dashboard(results: dict):
@@ -471,7 +484,7 @@ if st.button("🚀 PROCESS SESSION DATA"):
         render_match_feedback(facilitators, guests)
 
         meeting_duration_seconds   = duration_to_seconds(session['duration'])
-        st.session_state.results   = build_attendance_results(meet_log, mentees_found, mentee_list, pod_map, team_list, meeting_duration_seconds)
+        st.session_state.results   = build_attendance_results(meet_log, mentees_found, mentee_list, pod_map, team_list, meeting_duration_seconds, guests)
         st.session_state.processed = True
 
 if st.session_state.processed:
